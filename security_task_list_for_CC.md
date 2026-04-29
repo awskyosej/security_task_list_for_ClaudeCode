@@ -35,7 +35,7 @@
 | **AWS (솔루션 제공자)** | 보안 관련 기능 제공, 모범사례 교육 및 설계 지원 |
 | **정책 담당자** | 사내 보안 정책 수립 — 본 문서에서는 각 서비스의 **로깅 레벨·대상·보관주기** 결정에 집중. 인증/권한 정책은 IAM 섹션에서 통합 관리 |
 | **구축·운영 담당자** | 정책을 기술적으로 구현, 솔루션 구성 및 설정 반영, 프로세스 관리 |
-| **관제 담당자** | 이상 탐지 및 대응 (Splunk 활용, S3 로그 적재 기반) |
+| **관제 담당자** | 이상 탐지 및 대응 (SIEM 활용, S3 로그 적재 기반) |
 
 ---
 
@@ -53,7 +53,7 @@
 - 🔷`[NET]` VPN 접속 Authorization Rule 구성 (대상 네트워크 CIDR 제한)
 
 **관제 담당자**
-- VPN 연결/해제 이벤트 모니터링 (CloudWatch Logs → S3 → Splunk)
+- VPN 연결/해제 이벤트 모니터링 (CloudWatch Logs → S3 → SIEM)
 - 비인가 접속 시도 탐지 알림 설정
 
 ### 1-2. 권한관리 (Authorization)
@@ -79,11 +79,11 @@
 **구축·운영 담당자**
 - 🔷`[NET]` Client VPN 연결 로그 활성화 (CloudWatch Logs 그룹 지정)
 - 🔷`[NET]` VPC Flow Logs 활성화 (VPN 관련 ENI 또는 서브넷 대상, 정책 담당자가 결정한 커스텀 필드 적용)
-- 로그를 S3로 내보내기 설정 (Splunk 연동용)
+- 로그를 S3로 내보내기 설정 (SIEM 연동용)
 - 로그 보존 주기 설정 (CloudWatch 보존 정책 + S3 Lifecycle)
 
 **관제 담당자**
-- Splunk에서 VPN 로그 대시보드 구성
+- SIEM에서 VPN 로그 대시보드 구성
 - 비정상 접속 패턴(다수 실패, 비정상 시간대 접속 등) 알림 룰 설정
 
 ---
@@ -178,11 +178,11 @@
 - API Gateway 실행 로그(Execution Logs) 활성화 (CloudWatch Logs)
 - API Gateway 액세스 로그(Access Logs) 활성화 (정책 담당자가 결정한 커스텀 포맷 적용)
 - CloudTrail에서 API Gateway 관리 API 호출 로깅 확인
-- 로그 S3 내보내기 설정 (Splunk 연동)
+- 로그 S3 내보내기 설정 (SIEM 연동)
 - 요청/응답 본문 로깅 시 민감 데이터 마스킹 처리
 
 **관제 담당자**
-- Splunk에서 API 호출 대시보드 구성 (호출량, 지연시간, 에러율)
+- SIEM에서 API 호출 대시보드 구성 (호출량, 지연시간, 에러율)
 - 비정상 호출 패턴 알림 (급격한 호출 증가, 특정 IP 집중 호출 등)
 
 ---
@@ -234,11 +234,11 @@
 - ECS Task Definition에서 `awslogs` 로그 드라이버 설정 (CloudWatch Logs)
 - 애플리케이션 레벨 로깅 구성 (요청 ID, 사용자 식별자, 모델 호출 정보 등)
 - LLM 입출력 로깅 시 PII/민감 데이터 마스킹 처리
-- CloudWatch Logs → S3 내보내기 설정 (Splunk 연동)
+- CloudWatch Logs → S3 내보내기 설정 (SIEM 연동)
 - 로그 보존 주기 설정
 
 **관제 담당자**
-- Splunk에서 LLM Gateway 대시보드 구성 (호출량, 지연시간, 에러율)
+- SIEM에서 LLM Gateway 대시보드 구성 (호출량, 지연시간, 에러율)
 - 애플리케이션 에러 로그 알림 설정
 - 비정상 LLM 호출 패턴 탐지 (대량 호출, 비정상 프롬프트 등)
 
@@ -288,7 +288,7 @@
   - 이미지/문서 데이터 로깅 포함 여부 (S3 로깅 시에만 가능)
   - Guardrails 차단 이벤트 로깅 레벨
 - 로깅 대상 결정:
-  - S3 (대용량, 이미지 포함, Splunk 연동) 및/또는 CloudWatch Logs (실시간 모니터링)
+  - S3 (대용량, 이미지 포함, SIEM 연동) 및/또는 CloudWatch Logs (실시간 모니터링)
   - CloudTrail 데이터 이벤트 활성화 여부 (Bedrock 모델/Agent/Guardrail/KB/Session 각각)
 - 보관주기 결정: S3 Lifecycle + CloudWatch 보존 정책
 - 민감 데이터 처리: 프롬프트/응답 내 PII 포함 시 로그 암호화 수준 (SSE-S3 vs SSE-KMS)
@@ -305,7 +305,7 @@
 - CloudTrail에서 Bedrock 관리 API 호출 로깅 확인
 
 **관제 담당자**
-- Splunk에서 Bedrock 호출 로그 대시보드 구성
+- SIEM에서 Bedrock 호출 로그 대시보드 구성
 - Guardrails 차단 이벤트 트렌드 분석
 - 비정상 호출 패턴 알림 (대량 토큰 소비, 반복적 차단 등)
 
@@ -379,10 +379,10 @@
 - CloudTrail에서 IAM 관련 이벤트 로깅 확인 (기본 활성화)
 - IAM Credential Report 주기적 생성 설정
 - Access Advisor 데이터 주기적 리뷰 프로세스 수립
-- 로그 S3 적재 및 Splunk 연동
+- 로그 S3 적재 및 SIEM 연동
 
 **관제 담당자**
-- Splunk에서 IAM 이벤트 대시보드 구성
+- SIEM에서 IAM 이벤트 대시보드 구성
 - 고위험 IAM 변경 알림 (루트 키 생성, 정책 변경, 역할 생성 등)
 - Credential Report 기반 미사용 계정/키 리포트
 
@@ -441,7 +441,7 @@
 - CloudTrail Lake 활용 (쿼리 기반 분석, 선택적)
 
 **관제 담당자**
-- Splunk에서 CloudTrail 로그 대시보드 구성
+- SIEM에서 CloudTrail 로그 대시보드 구성
 - 고위험 API 호출 알림 설정 (루트 로그인, 보안 그룹 변경, IAM 변경 등)
 - CloudTrail Insights 활성화 (비정상 API 호출 볼륨 자동 탐지)
 
@@ -500,13 +500,13 @@
 - S3 버킷 설정 (암호화, Lifecycle, 접근 제어)
 
 **관제 담당자**
-- Splunk에서 Config 규정 준수 대시보드 구성
+- SIEM에서 Config 규정 준수 대시보드 구성
 - 리소스 구성 변경 이력 추적
 - Non-compliant 리소스 트렌드 분석
 
 ---
 
-## 요약: 관제 담당자를 위한 S3 → Splunk 로그 적재 대상
+## 요약: 관제 담당자를 위한 S3 → SIEM 로그 적재 대상
 
 | 로그 소스 | S3 적재 경로 | 비고 |
 |-----------|-------------|------|
