@@ -1,5 +1,11 @@
 # AWS 위의 AI 보안 아키텍처 — 서비스별 보안 Task 정리
 
+> **범례**
+> - 🔷`[NET]` = 네트워크 담당자 Task
+> - 각 서비스 제목에 **제어 주체**와 **제어 레벨**을 명시
+> - 정책 담당자의 인증/권한 관련 Task는 **6. AWS IAM** 섹션에 통합
+> - 각 서비스의 정책 담당자 Task는 **로깅 레벨·대상·보관주기** 결정사항에 집중
+
 ## 아키텍처 개요
 
 ```
@@ -27,27 +33,24 @@
 | 역할 | 설명 |
 |------|------|
 | **AWS (솔루션 제공자)** | 보안 관련 기능 제공, 모범사례 교육 및 설계 지원 |
-| **정책 담당자** | 사내 보안 정책 수립 (인증/권한관리/자산등급 등) |
+| **정책 담당자** | 사내 보안 정책 수립 — 본 문서에서는 각 서비스의 **로깅 레벨·대상·보관주기** 결정에 집중. 인증/권한 정책은 IAM 섹션에서 통합 관리 |
 | **구축·운영 담당자** | 정책을 기술적으로 구현, 솔루션 구성 및 설정 반영, 프로세스 관리 |
 | **관제 담당자** | 이상 탐지 및 대응 (Splunk 활용, S3 로그 적재 기반) |
 
 ---
 
 ## 1. VPN (Client VPN / S2S VPN)
+> **제어 주체**: On-Prem 사용자/장비 → AWS 진입점
+> **제어 레벨**: 네트워크 연결 레벨 — 사용자 접속 인증 및 터널 암호화
 
 ### 1-1. 인증 (Authentication)
 
-**정책 담당자**
-- VPN 접속 허용 대상 및 인증 방식 정책 수립 (인증서 기반 / AD 연동 / SAML 등)
-- MFA 적용 여부 및 정책 결정
-- VPN 접속 허용 시간대 및 조건 정의
-
 **구축·운영 담당자**
-- AWS Client VPN 엔드포인트 생성 및 인증서(ACM) 발급·관리
-- Active Directory 또는 SAML IdP 연동 구성
-- MFA 설정 적용 (Client VPN의 경우 AD + MFA 또는 SAML 기반)
-- S2S VPN의 경우 IKE/IPSec 인증 파라미터(Pre-Shared Key 또는 인증서) 설정
-- VPN 접속 Authorization Rule 구성 (대상 네트워크 CIDR 제한)
+- 🔷`[NET]` AWS Client VPN 엔드포인트 생성 및 인증서(ACM) 발급·관리
+- 🔷`[NET]` Active Directory 또는 SAML IdP 연동 구성
+- 🔷`[NET]` MFA 설정 적용 (Client VPN의 경우 AD + MFA 또는 SAML 기반)
+- 🔷`[NET]` S2S VPN의 경우 IKE/IPSec 인증 파라미터(Pre-Shared Key 또는 인증서) 설정
+- 🔷`[NET]` VPN 접속 Authorization Rule 구성 (대상 네트워크 CIDR 제한)
 
 **관제 담당자**
 - VPN 연결/해제 이벤트 모니터링 (CloudWatch Logs → S3 → Splunk)
@@ -55,15 +58,11 @@
 
 ### 1-2. 권한관리 (Authorization)
 
-**정책 담당자**
-- VPN 접속 후 접근 가능한 네트워크 대역(CIDR) 정책 수립
-- 사용자/그룹별 접근 가능 리소스 범위 정의
-
 **구축·운영 담당자**
-- Client VPN Authorization Rule 설정 (그룹별 대상 네트워크 제한)
-- Security Group 연결을 통한 VPN 엔드포인트 트래픽 제어
-- Route Table 설정으로 VPN 트래픽 경로 제한
-- S2S VPN의 경우 VGW Route Propagation 및 라우팅 정책 설정
+- 🔷`[NET]` Client VPN Authorization Rule 설정 (그룹별 대상 네트워크 제한)
+- 🔷`[NET]` Security Group 연결을 통한 VPN 엔드포인트 트래픽 제어
+- 🔷`[NET]` Route Table 설정으로 VPN 트래픽 경로 제한
+- 🔷`[NET]` S2S VPN의 경우 VGW Route Propagation 및 라우팅 정책 설정
 
 **관제 담당자**
 - 허용 범위 외 네트워크 접근 시도 탐지
@@ -72,12 +71,14 @@
 ### 1-3. 로깅 (Logging)
 
 **정책 담당자**
-- VPN 관련 로그 보존 기간 및 저장 정책 수립
-- 로그에 포함되어야 할 필수 항목 정의 (접속자, 시간, 소스IP, 대상 등)
+- VPN 연결 로그 보존 기간 결정 (예: 1년/3년/5년)
+- 로깅 레벨 결정: 연결/해제 이벤트만 vs VPC Flow Logs(패킷 헤더 수준)까지 포함
+- 로깅 대상 결정: CloudWatch Logs → S3 경로 및 S3 버킷 지정
+- VPC Flow Logs 커스텀 필드 범위 결정 (기본 v2 vs ECS 메타데이터 포함 v7 등)
 
 **구축·운영 담당자**
-- Client VPN 연결 로그 활성화 (CloudWatch Logs 그룹 지정)
-- VPC Flow Logs 활성화 (VPN 관련 ENI 또는 서브넷 대상)
+- 🔷`[NET]` Client VPN 연결 로그 활성화 (CloudWatch Logs 그룹 지정)
+- 🔷`[NET]` VPC Flow Logs 활성화 (VPN 관련 ENI 또는 서브넷 대상, 정책 담당자가 결정한 커스텀 필드 적용)
 - 로그를 S3로 내보내기 설정 (Splunk 연동용)
 - 로그 보존 주기 설정 (CloudWatch 보존 정책 + S3 Lifecycle)
 
@@ -88,17 +89,15 @@
 ---
 
 ## 2. AWS VGW (Virtual Private Gateway)
+> **제어 주체**: On-Prem 네트워크 ↔ AWS VPC 간 터널
+> **제어 레벨**: 네트워크 라우팅 레벨 — IPSec 터널 인증 및 경로 제어
 
 ### 2-1. 인증 (Authentication)
 
-**정책 담당자**
-- VGW 연결 대상 VPN 터널 인증 방식 정책 (PSK vs 인증서)
-- 터널 갱신 주기 정책
-
 **구축·운영 담당자**
-- VGW 생성 및 VPC 연결(Attach)
-- VPN Connection 생성 시 인증 파라미터 설정 (PSK 또는 Private Certificate Authority 인증서)
-- 터널 옵션 설정 (IKE 버전, DH 그룹, 암호화 알고리즘 등)
+- 🔷`[NET]` VGW 생성 및 VPC 연결(Attach)
+- 🔷`[NET]` VPN Connection 생성 시 인증 파라미터 설정 (PSK 또는 Private Certificate Authority 인증서)
+- 🔷`[NET]` 터널 옵션 설정 (IKE 버전, DH 그룹, 암호화 알고리즘 등)
 
 **관제 담당자**
 - VPN 터널 상태(UP/DOWN) 모니터링 (CloudWatch 메트릭: `TunnelState`)
@@ -106,14 +105,10 @@
 
 ### 2-2. 권한관리 (Authorization)
 
-**정책 담당자**
-- VGW를 통해 전파되는 라우팅 범위 정책
-- On-prem에서 접근 가능한 AWS 리소스 범위 정의
-
 **구축·운영 담당자**
-- Route Table에 VGW Route Propagation 활성화/비활성화 설정
-- 필요 시 Static Route 추가로 라우팅 범위 제한
-- Network ACL 및 Security Group으로 VGW 경유 트래픽 제어
+- 🔷`[NET]` Route Table에 VGW Route Propagation 활성화/비활성화 설정
+- 🔷`[NET]` 필요 시 Static Route 추가로 라우팅 범위 제한
+- 🔷`[NET]` Network ACL 및 Security Group으로 VGW 경유 트래픽 제어
 
 **관제 담당자**
 - VGW 경유 트래픽 볼륨 모니터링 (CloudWatch: `TunnelDataIn`, `TunnelDataOut`)
@@ -122,10 +117,11 @@
 ### 2-3. 로깅 (Logging)
 
 **정책 담당자**
-- VGW 관련 네트워크 로그 보존 정책
+- VGW 관련 네트워크 로그 보존 기간 결정
+- 로깅 대상: VPC Flow Logs (VGW 연결 서브넷) + CloudTrail (VGW 관리 API)
 
 **구축·운영 담당자**
-- VPC Flow Logs 활성화 (VGW 연결 서브넷 대상)
+- 🔷`[NET]` VPC Flow Logs 활성화 (VGW 연결 서브넷 대상)
 - CloudTrail에서 VGW 관련 API 호출 로깅 확인 (CreateVpnConnection 등)
 - 로그 S3 적재 설정
 
@@ -136,13 +132,10 @@
 ---
 
 ## 3. AWS API Gateway
+> **제어 주체**: LLM Gateway로 향하는 API 호출
+> **제어 레벨**: API 호출 레벨 — 요청 단위 인증·인가·트래픽 제어
 
 ### 3-1. 인증 (Authentication)
-
-**정책 담당자**
-- API 호출 인증 방식 정책 수립 (IAM, Cognito, Lambda Authorizer, API Key 등)
-- API 호출 주체(사용자/서비스) 식별 정책
-- mTLS 적용 여부 결정
 
 **구축·운영 담당자**
 - API Gateway 인증 메커니즘 구성:
@@ -151,7 +144,7 @@
   - Cognito User Pool Authorizer: 사용자 인증 연동
   - API Key + Usage Plan: API 키 발급 및 사용량 제한
 - mTLS 설정 (Custom Domain + Truststore 구성)
-- Resource Policy 설정 (VPC Endpoint 또는 소스 IP 기반 접근 제한)
+- 🔷`[NET]` Resource Policy 설정 (VPC Endpoint 또는 소스 IP 기반 접근 제한)
 
 **관제 담당자**
 - 인증 실패(401/403) 응답 비율 모니터링
@@ -159,17 +152,12 @@
 
 ### 3-2. 권한관리 (Authorization)
 
-**정책 담당자**
-- API 리소스/메서드별 접근 권한 정책 수립
-- Rate Limiting / Throttling 정책 수립
-- API 호출 가능 소스(IP/VPC) 제한 정책
-
 **구축·운영 담당자**
-- API Gateway Resource Policy 설정 (소스 VPC/IP 제한)
+- 🔷`[NET]` API Gateway Resource Policy 설정 (소스 VPC/IP 제한)
 - Usage Plan 및 Throttling 설정 (Rate Limit, Burst Limit)
 - IAM Policy에서 `execute-api:Invoke` 권한 세분화
-- WAF 연동 (API Gateway 앞단에 AWS WAF 적용)
-- Private API 구성 (VPC Endpoint 경유만 허용)
+- 🔷`[NET]` WAF 연동 (API Gateway 앞단에 AWS WAF 적용)
+- 🔷`[NET]` Private API 구성 (VPC Endpoint 경유만 허용)
 
 **관제 담당자**
 - API 호출량 및 에러율 모니터링 (CloudWatch: `Count`, `4XXError`, `5XXError`)
@@ -179,12 +167,16 @@
 ### 3-3. 로깅 (Logging)
 
 **정책 담당자**
-- API 호출 로그 보존 정책 (요청/응답 본문 포함 여부 결정)
-- 민감 데이터 마스킹 정책
+- 로깅 레벨 결정:
+  - 액세스 로그만 (호출 메타데이터) vs 실행 로그 포함 (요청/응답 본문)
+  - 액세스 로그 커스텀 포맷 필드 범위 결정 (호출자 IP, API Key, Cognito ID, WAF 결과 등)
+- 로깅 대상: CloudWatch Logs → S3 경로 지정
+- 보관주기 결정 (CloudWatch 보존 + S3 Lifecycle)
+- 민감 데이터 마스킹 정책 (요청/응답 본문 로깅 시)
 
 **구축·운영 담당자**
 - API Gateway 실행 로그(Execution Logs) 활성화 (CloudWatch Logs)
-- API Gateway 액세스 로그(Access Logs) 활성화 (커스텀 포맷 설정)
+- API Gateway 액세스 로그(Access Logs) 활성화 (정책 담당자가 결정한 커스텀 포맷 적용)
 - CloudTrail에서 API Gateway 관리 API 호출 로깅 확인
 - 로그 S3 내보내기 설정 (Splunk 연동)
 - 요청/응답 본문 로깅 시 민감 데이터 마스킹 처리
@@ -196,19 +188,16 @@
 ---
 
 ## 4. AWS ECS (LLM Gateway)
+> **제어 주체**: LLM Gateway 컨테이너 워크로드
+> **제어 레벨**: 컨테이너/태스크 레벨 — 서비스 계정 권한, 네트워크 격리, 이미지 무결성
 
 ### 4-1. 인증 (Authentication)
-
-**정책 담당자**
-- LLM Gateway 서비스 접근 인증 정책 (API Gateway에서 전달받는 인증 토큰 검증 방식)
-- 컨테이너 이미지 신뢰성 검증 정책 (이미지 서명/스캔)
-- ECS Task가 사용하는 서비스 계정(Task Role) 인증 정책
 
 **구축·운영 담당자**
 - ECS Task Definition에서 Task Role 및 Execution Role 설정
 - ECR 이미지 스캔 활성화 (취약점 스캔)
 - ECR 이미지 서명 검증 구성 (선택적)
-- ECS Service 배포 시 Private Subnet 배치 (인터넷 직접 노출 방지)
+- 🔷`[NET]` ECS Service 배포 시 Private Subnet 배치 (인터넷 직접 노출 방지)
 - Application Load Balancer(ALB) 또는 API Gateway와의 연동 시 인증 전달 구성
 
 **관제 담당자**
@@ -217,18 +206,13 @@
 
 ### 4-2. 권한관리 (Authorization)
 
-**정책 담당자**
-- ECS Task Role의 최소 권한 원칙 정책
-- LLM Gateway가 호출 가능한 Bedrock 모델 범위 정책
-- 네트워크 수준 접근 제어 정책 (Security Group, NACL)
-
 **구축·운영 담당자**
 - ECS Task Role IAM Policy 설정:
   - Bedrock `InvokeModel` 권한 (특정 모델 ARN으로 제한)
   - 필요한 최소한의 AWS 서비스 접근 권한만 부여
 - ECS Execution Role 설정 (ECR Pull, CloudWatch Logs 등)
-- Security Group 설정 (인바운드: API Gateway/ALB만 허용, 아웃바운드: Bedrock 엔드포인트만 허용)
-- VPC Endpoint 구성 (Bedrock, ECR, CloudWatch Logs 등 — 인터넷 경유 없이 접근)
+- 🔷`[NET]` Security Group 설정 (인바운드: API Gateway/ALB만 허용, 아웃바운드: Bedrock 엔드포인트만 허용)
+- 🔷`[NET]` VPC Endpoint 구성 (Bedrock, ECR, CloudWatch Logs 등 — 인터넷 경유 없이 접근)
 - Secrets Manager 또는 SSM Parameter Store를 통한 민감 설정값 관리
 
 **관제 담당자**
@@ -239,9 +223,12 @@
 ### 4-3. 로깅 (Logging)
 
 **정책 담당자**
-- LLM Gateway 애플리케이션 로그 보존 정책
-- LLM 요청/응답 로그 보존 여부 및 민감 데이터 처리 정책
-- 컨테이너 로그 보존 기간 정책
+- 로깅 레벨 결정:
+  - 컨테이너 stdout/stderr 로그 (애플리케이션 로그)
+  - LLM 요청/응답 본문 로깅 여부 (프롬프트/응답 전문 포함 여부)
+- 로깅 대상: CloudWatch Logs (awslogs 드라이버) → S3
+- 보관주기 결정 (CloudWatch 보존 + S3 Lifecycle)
+- 민감 데이터 처리 방침: LLM 입출력 내 PII 마스킹 여부 및 방식
 
 **구축·운영 담당자**
 - ECS Task Definition에서 `awslogs` 로그 드라이버 설정 (CloudWatch Logs)
@@ -258,29 +245,22 @@
 ---
 
 ## 5. Amazon Bedrock (Claude Inference)
+> **제어 주체**: LLM 모델 호출 및 AI 콘텐츠
+> **제어 레벨**: AI 모델 레벨 — 모델 ARN 단위 호출 제어, 콘텐츠 필터링(Guardrails), 프롬프트/응답 로깅
 
 ### 5-1. 인증 (Authentication)
-
-**정책 담당자**
-- Bedrock API 호출 주체 인증 정책 (ECS Task Role만 허용)
-- Bedrock 모델 접근 활성화 정책 (사용 가능 모델 목록 관리)
 
 **구축·운영 담당자**
 - Bedrock Model Access 활성화 (콘솔에서 사용할 모델 승인)
 - ECS Task Role에 Bedrock 관련 IAM 정책 연결
-- VPC Endpoint for Bedrock 구성 (Private 네트워크 경유 호출)
-- Bedrock VPC Endpoint Policy 설정 (특정 IAM Principal만 허용)
+- 🔷`[NET]` VPC Endpoint for Bedrock 구성 (Private 네트워크 경유 호출)
+- 🔷`[NET]` Bedrock VPC Endpoint Policy 설정 (특정 IAM Principal만 허용)
 
 **관제 담당자**
 - Bedrock API 호출 인증 실패 이벤트 모니터링 (CloudTrail)
 - 비인가 모델 접근 시도 탐지
 
 ### 5-2. 권한관리 (Authorization)
-
-**정책 담당자**
-- 사용 가능 Bedrock 모델 목록 정책 (예: Claude 3.5 Sonnet만 허용)
-- Bedrock Guardrails 정책 수립 (콘텐츠 필터링, 토픽 제한, PII 감지 등)
-- 모델 호출 한도(Quota) 정책
 
 **구축·운영 담당자**
 - IAM Policy에서 Bedrock 권한 세분화:
@@ -292,7 +272,7 @@
   - PII Detection (개인정보 감지 및 마스킹)
   - Word Filter (금지어 설정)
 - Service Quotas 설정 확인 및 필요 시 한도 증가 요청
-- Bedrock VPC Endpoint Policy로 접근 가능 Principal/Action 제한
+- 🔷`[NET]` Bedrock VPC Endpoint Policy로 접근 가능 Principal/Action 제한
 
 **관제 담당자**
 - Bedrock 모델 호출량 모니터링 (CloudWatch: `Invocations`, `InvocationLatency`)
@@ -303,14 +283,20 @@
 ### 5-3. 로깅 (Logging)
 
 **정책 담당자**
-- Bedrock 모델 호출 로그 보존 정책
-- LLM 입출력(프롬프트/응답) 로깅 여부 및 민감 데이터 처리 정책
-- Bedrock Guardrails 차단 로그 보존 정책
+- 로깅 레벨 결정:
+  - 메타데이터만 (모델 ID, 호출 시간, 토큰 수, 지연시간) vs 전문 포함 (프롬프트/응답 텍스트)
+  - 이미지/문서 데이터 로깅 포함 여부 (S3 로깅 시에만 가능)
+  - Guardrails 차단 이벤트 로깅 레벨
+- 로깅 대상 결정:
+  - S3 (대용량, 이미지 포함, Splunk 연동) 및/또는 CloudWatch Logs (실시간 모니터링)
+  - CloudTrail 데이터 이벤트 활성화 여부 (Bedrock 모델/Agent/Guardrail/KB/Session 각각)
+- 보관주기 결정: S3 Lifecycle + CloudWatch 보존 정책
+- 민감 데이터 처리: 프롬프트/응답 내 PII 포함 시 로그 암호화 수준 (SSE-S3 vs SSE-KMS)
 
 **구축·운영 담당자**
 - Bedrock Model Invocation Logging 활성화:
   - 대상: S3 버킷 및/또는 CloudWatch Logs
-  - 입력/출력 데이터 로깅 여부 설정
+  - 입력/출력 데이터 로깅 여부 설정 (정책 담당자 결정 반영)
   - 이미지 데이터 로깅 여부 설정
 - S3 버킷 설정 (로그 저장용):
   - 버킷 정책 설정 (Bedrock 서비스 Principal 허용)
@@ -326,14 +312,19 @@
 ---
 
 ## 6. AWS IAM (Identity and Access Management)
+> **제어 주체**: 모든 AWS 리소스에 대한 사용자/서비스 접근
+> **제어 레벨**: API 액션 + 리소스 ARN + Condition 레벨 — 전체 아키텍처의 인증/권한 정책을 통합 관리
 
 ### 6-1. 인증 (Authentication)
 
-**정책 담당자**
-- AWS 콘솔/API 접근 인증 정책 (SSO/Federation 방식)
+**정책 담당자** ← 인증 정책은 IAM에서 통합 관리
+- AWS 콘솔/API 접근 인증 방식 결정 (SSO/Federation)
 - MFA 필수 적용 정책
 - 패스워드 정책 (복잡도, 만료 주기 등)
 - 서비스 계정(IAM Role) 관리 정책
+- VPN 접속 인증 방식 결정 (인증서/SAML/AD + MFA 여부)
+- API 호출 인증 방식 결정 (IAM/Cognito/Lambda Authorizer/mTLS)
+- Bedrock 모델 접근 활성화 대상 모델 목록 관리
 
 **구축·운영 담당자**
 - AWS IAM Identity Center(SSO) 구성 또는 외부 IdP Federation 설정
@@ -350,11 +341,18 @@
 
 ### 6-2. 권한관리 (Authorization)
 
-**정책 담당자**
+**정책 담당자** ← 권한 정책은 IAM에서 통합 관리
 - 최소 권한 원칙(Least Privilege) 정책
 - 역할 기반 접근 제어(RBAC) 정책 수립
+- ABAC(태그 기반 접근 제어) 정책 수립
 - Permission Boundary 정책
 - SCP(Service Control Policy) 정책 (Organizations 사용 시)
+- VPN 접속 후 접근 가능 네트워크 대역(CIDR) 정책
+- API 리소스/메서드별 접근 권한 및 Rate Limiting 정책
+- ECS Task Role 최소 권한 범위 정책
+- Bedrock 사용 가능 모델 목록 및 Guardrails 정책 (콘텐츠 필터, PII, 금지 주제)
+- Bedrock 모델 호출 한도(Quota) 정책
+- Config Rule 적용 범위 및 비준수(Non-compliant) 대응 정책
 
 **구축·운영 담당자**
 - IAM Policy 설계 및 적용:
@@ -373,8 +371,9 @@
 ### 6-3. 로깅 (Logging)
 
 **정책 담당자**
-- IAM 관련 이벤트 로그 보존 정책
-- 감사(Audit) 로그 요구사항 정의
+- IAM 관련 이벤트 로그 보존 기간 결정
+- 감사(Audit) 로그 요구사항 정의 (어떤 IAM 이벤트를 필수 기록할 것인지)
+- IAM Credential Report 생성 주기 결정
 
 **구축·운영 담당자**
 - CloudTrail에서 IAM 관련 이벤트 로깅 확인 (기본 활성화)
@@ -390,12 +389,10 @@
 ---
 
 ## 7. AWS CloudTrail
+> **제어 주체**: 모든 AWS API 호출
+> **제어 레벨**: API 호출 레벨 — 관리 이벤트(기본) + 데이터 이벤트(Bedrock 모델 호출 등, 선택)
 
 ### 7-1. 인증 (Authentication)
-
-**정책 담당자**
-- CloudTrail 관리 접근 권한 정책 (누가 Trail을 생성/수정/삭제할 수 있는지)
-- CloudTrail 로그 접근 권한 정책
 
 **구축·운영 담당자**
 - CloudTrail Trail 생성 (전체 리전, 관리 이벤트 + 데이터 이벤트)
@@ -407,10 +404,6 @@
 - CloudTrail Trail 설정 변경 이벤트 모니터링 (Trail 비활성화/삭제 시도 탐지)
 
 ### 7-2. 권한관리 (Authorization)
-
-**정책 담당자**
-- CloudTrail 로그 열람 권한 정책 (보안팀만 접근 가능 등)
-- CloudTrail 설정 변경 권한 정책
 
 **구축·운영 담당자**
 - S3 버킷 정책 설정 (로그 읽기 권한을 보안팀 IAM Role로 제한)
@@ -425,14 +418,19 @@
 ### 7-3. 로깅 (Logging)
 
 **정책 담당자**
-- CloudTrail 로그 보존 기간 정책
-- 로그 암호화 정책 (KMS 키 사용)
-- 데이터 이벤트 로깅 범위 정책 (S3, Lambda, Bedrock 등)
+- 로깅 레벨 결정:
+  - 관리 이벤트(Management Events): 읽기/쓰기 모두 vs 쓰기만
+  - 데이터 이벤트(Data Events) 활성화 범위: S3, Lambda, Bedrock(모델/Agent/Guardrail/KB/Session) 등
+  - CloudTrail Insights 활성화 여부
+- 로깅 대상: S3 버킷 (직접 적재) + CloudWatch Logs (실시간 알림용, 선택)
+- 보관주기 결정: S3 Lifecycle (예: 1년 Standard → Glacier → 삭제)
+- 로그 암호화 정책: SSE-KMS 키 지정
+- 로그 무결성: Log File Validation 및 S3 Object Lock 적용 여부
 
 **구축·운영 담당자**
 - CloudTrail Trail 설정:
   - 관리 이벤트(Management Events) 로깅 활성화
-  - 데이터 이벤트(Data Events) 로깅 활성화 (S3, Bedrock 등 대상 지정)
+  - 데이터 이벤트(Data Events) 로깅 활성화 (정책 담당자가 결정한 대상 지정)
   - 멀티 리전 Trail 활성화
 - S3 버킷 설정:
   - SSE-KMS 암호화 적용
@@ -450,12 +448,10 @@
 ---
 
 ## 8. AWS Config
+> **제어 주체**: AWS 리소스 구성(Configuration) 상태
+> **제어 레벨**: 리소스 속성 레벨 — 구성 변경 추적 및 규정 준수 평가
 
 ### 8-1. 인증 (Authentication)
-
-**정책 담당자**
-- AWS Config 관리 접근 권한 정책
-- Config Rule 생성/수정 권한 정책
 
 **구축·운영 담당자**
 - AWS Config 활성화 (전체 리전)
@@ -466,10 +462,6 @@
 - Config 설정 변경 이벤트 모니터링 (Config Recorder 중지 시도 탐지)
 
 ### 8-2. 권한관리 (Authorization)
-
-**정책 담당자**
-- Config Rule 정의 정책 (어떤 규정 준수 규칙을 적용할 것인지)
-- 비준수(Non-compliant) 리소스 대응 정책
 
 **구축·운영 담당자**
 - AWS Config Rules 설정 (이 아키텍처 관련 주요 규칙):
@@ -494,11 +486,15 @@
 ### 8-3. 로깅 (Logging)
 
 **정책 담당자**
-- Config 기록 보존 정책
-- 리소스 구성 변경 이력 보존 기간 정책
+- 로깅 레벨 결정:
+  - 기록 빈도: 연속(Continuous) vs 일일(Daily)
+  - 기록 대상 리소스 유형 범위 (전체 vs 특정 유형만)
+- 로깅 대상: S3 (Config 스냅샷 및 변경 이력) + SNS (알림)
+- 보관주기 결정: S3 Lifecycle 정책
+- 리소스 구성 변경 이력 보존 기간 결정
 
 **구축·운영 담당자**
-- Config Recorder 설정 (전체 리소스 유형 기록)
+- Config Recorder 설정 (정책 담당자가 결정한 기록 빈도 및 리소스 유형 반영)
 - Config 스냅샷 및 변경 이력 S3 저장 설정
 - Config 알림 SNS Topic 설정
 - S3 버킷 설정 (암호화, Lifecycle, 접근 제어)
@@ -524,3 +520,8 @@
 | AWS Config 기록 | 직접 S3 | 리소스 구성 변경 이력 |
 | WAF 로그 | 직접 S3 또는 Kinesis → S3 | API Gateway WAF 차단 로그 |
 | IAM Credential Report | 수동/자동 생성 후 S3 | 계정/키 상태 리포트 |
+
+---
+
+> **참고**: AWS 서비스별 보안 기능 세분화(Granularity) 수준은 별도 문서 [ai-security-granularity.md](./ai-security-granularity.md)를 참조하세요.
+> IAM × Bedrock Deep Dive (모델 ARN 단위 권한 제어, ABAC, Condition Key, SCP, VPC Endpoint Policy 등)도 해당 문서에 포함되어 있습니다.
