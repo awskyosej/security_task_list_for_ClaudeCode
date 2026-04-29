@@ -2,354 +2,232 @@
 
 ## 개요
 
-정책 담당자가 수립한 자산 보안 등급(예: 공개 / 사내 한정 / 대외비 / 극비)을 AWS 서비스를 활용하여 기술적으로 구현하는 방안을 정리합니다.
-
-이 문서는 두 가지 자산 유형을 다룹니다:
-1. **코드 자산** — Git 리포지토리 내 소스코드, IaC 템플릿, 설정 파일 등
-2. **문서 자산** — S3에 저장되는 설계 문서, 회의록, LLM 프롬프트/응답 로그, 보안 감사 자료 등
+정책 담당자가 수립한 자산 보안 등급(극비/대외비/사내한정/공개)을 AWS 환경에서 기술적으로 구현하는 방안입니다.
+코드 자산은 **On-Prem Git**에서 관리하므로, AWS 측에서는 **S3에 저장되는 문서/로그/아티팩트**와 **On-Prem Git에서 AWS로 유입되는 빌드 결과물**에 대한 등급 관리를 다룹니다.
 
 ---
 
-## 자산 보안 등급 체계 (예시)
+## 보안 등급 체계 (예시)
 
-| 등급 | 레이블 | 설명 | 예시 |
-|------|--------|------|------|
-| Level 1 | **공개 (Public)** | 외부 공개 가능 | 오픈소스 코드, 공개 문서 |
-| Level 2 | **사내 한정 (Internal)** | 사내 직원만 접근 | 일반 개발 코드, 내부 위키 |
-| Level 3 | **대외비 (Confidential)** | 특정 프로젝트/팀만 접근 | AI 모델 파인튜닝 코드, 아키텍처 설계서, LLM 프롬프트 로그 |
-| Level 4 | **극비 (Top Secret)** | 최소 인원만 접근, 감사 추적 필수 | 보안 키, 인증서, 핵심 알고리즘, 고객 데이터 처리 로직 |
-
----
-
-## 1. S3 기반 문서 자산 등급 관리
-
-### 1-1. 태그 기반 등급 분류 + ABAC
-
-**구현 방식**: S3 객체 또는 버킷에 보안 등급 태그를 부착하고, IAM ABAC로 접근 제어
-
-**태그 설계**:
-```
-Key: SecurityClassification
-Value: Public | Internal | Confidential | TopSecret
-```
-
-**IAM Policy 예시 — 대외비 이상만 특정 팀 접근 허용**:
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["s3:GetObject"],
-    "Resource": "arn:aws:s3:::doc-assets/*",
-    "Condition": {
-      "StringEquals": {
-        "s3:ExistingObjectTag/SecurityClassification": ["Confidential", "TopSecret"],
-        "aws:PrincipalTag/Team": "security-team"
-      }
-    }
-  }]
-}
-```
-
-**정책 담당자 Task**:
-- 보안 등급 체계 및 태그 값 표준 정의
-- 등급별 접근 가능 역할/팀 매핑 정책 수립
-- 등급 변경 승인 프로세스 정의
-
-**구축·운영 담당자 Task**:
-- S3 버킷 정책 및 IAM Policy에 태그 기반 Condition 적용
-- 객체 업로드 시 태그 자동 부착 프로세스 구성 (Lambda 트리거 또는 업로드 정책)
-- `s3:PutObjectTagging` 권한을 등급 관리자에게만 부여 (임의 등급 변경 방지)
-
-### 1-2. S3 Access Points — 등급별 접근 경로 분리
-
-**구현 방식**: 하나의 S3 버킷에 등급별 Access Point를 생성하여, 각 Access Point마다 다른 접근 정책 적용
-
-```
-doc-assets-bucket
-  ├── ap-public      → 공개 등급 객체만 접근 가능 (prefix: public/)
-  ├── ap-internal    → 사내 한정 이하 접근 가능 (prefix: internal/)
-  ├── ap-confidential → 대외비 이하 접근 가능 (prefix: confidential/)
-  └── ap-topsecret   → 극비 접근 가능 (prefix: topsecret/, VPC 경유 필수)
-```
-
-**극비 등급 Access Point — VPC 전용 + 태그 기반 제어**:
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"AWS": "arn:aws:iam::123456789012:role/TopSecret-Reader"},
-    "Action": "s3:GetObject",
-    "Resource": "arn:aws:s3:us-east-1:123456789012:accesspoint/ap-topsecret/object/topsecret/*",
-    "Condition": {
-      "StringEquals": {
-        "s3:AccessPointNetworkOrigin": "VPC",
-        "aws:PrincipalTag/ClearanceLevel": "TopSecret"
-      }
-    }
-  }]
-}
-```
-
-**장점**:
-- 등급별 네트워크 경로 분리 (극비는 VPC 전용, 공개는 인터넷 허용)
-- Access Point별 독립적인 접근 정책 관리
-- 버킷 정책 복잡도 감소
-
-### 1-3. S3 Access Grants — 사내 디렉토리 연동 등급 관리
-
-**구현 방식**: IAM Identity Center(SSO)와 연동하여, 사내 디렉토리(AD/Okta 등)의 사용자/그룹을 S3 경로에 직접 매핑
-
-```
-S3 Access Grants Instance
-  ├── Location: s3://doc-assets/confidential/
-  │     └── Grant: AD Group "AI-Security-Team" → READ
-  ├── Location: s3://doc-assets/topsecret/
-  │     └── Grant: AD Group "CISO-Office" → READ
-  └── Location: s3://doc-assets/internal/
-        └── Grant: AD Group "All-Employees" → READ
-```
-
-**장점**:
-- IAM Policy 작성 없이 사내 디렉토리 그룹 기반으로 S3 접근 제어
-- 인사 이동 시 AD 그룹 변경만으로 자동 반영
-- 임시 자격 증명(STS) 자동 발급 — Access Key 관리 불필요
-
-**정책 담당자 Task**:
-- 등급별 접근 가능 AD 그룹 매핑 정의
-- Grant 생성/변경 승인 프로세스
-
-### 1-4. Amazon Macie — 자동 등급 분류 및 민감 데이터 탐지
-
-**구현 방식**: S3 버킷을 Macie로 스캔하여 민감 데이터를 자동 탐지하고, 등급 미부착 또는 등급 불일치 자산을 식별
-
-**활용 시나리오**:
-- **자동 탐지**: PII(개인정보), 금융 데이터, 인증 정보(API Key, 비밀번호) 등이 포함된 객체 자동 식별
-- **커스텀 데이터 식별자**: 사내 보안 등급 키워드(예: "극비", "대외비", "Confidential") 패턴 정의
-- **등급 검증**: 태그가 `Public`인데 PII가 포함된 객체 → 등급 불일치 알림
-- **미분류 자산 탐지**: 보안 등급 태그가 없는 객체 식별
-
-**Macie 커스텀 데이터 식별자 예시**:
-```
-이름: SecurityClassificationKeyword
-정규식: (극비|대외비|Confidential|Top\s?Secret|기밀)
-```
-
-**정책 담당자 Task**:
-- Macie 스캔 대상 버킷 범위 결정
-- 커스텀 데이터 식별자 키워드 목록 정의
-- 등급 불일치 발견 시 대응 프로세스 정의
-
-**구축·운영 담당자 Task**:
-- Macie 활성화 및 대상 S3 버킷 설정
-- 커스텀 데이터 식별자 생성
-- Macie Finding → EventBridge → SNS/Lambda 알림 파이프라인 구성
-- 자동 태그 부착 Lambda 구성 (선택적)
-
-### 1-5. S3 암호화 — 등급별 KMS 키 분리
-
-**구현 방식**: 보안 등급별로 다른 KMS 키를 사용하여 암호화하고, KMS 키 정책으로 접근 제어
-
-```
-Level 1-2 (공개/사내 한정): SSE-S3 (AWS 관리형 키)
-Level 3 (대외비):           SSE-KMS (팀 전용 CMK)
-Level 4 (극비):             SSE-KMS (CISO 전용 CMK + 키 정책으로 접근 제한)
-```
-
-**극비 등급 KMS 키 정책 예시**:
-```json
-{
-  "Statement": [{
-    "Effect": "Allow",
-    "Principal": {"AWS": "arn:aws:iam::123456789012:role/CISO-Office-Role"},
-    "Action": ["kms:Decrypt", "kms:GenerateDataKey"],
-    "Resource": "*",
-    "Condition": {
-      "Bool": {"aws:MultiFactorAuthPresent": "true"}
-    }
-  }]
-}
-```
-→ 극비 문서 복호화 시 MFA 필수
+| 등급 | 태그 값 | 설명 | 예시 자산 |
+|------|---------|------|-----------|
+| **극비** | `Classification:TopSecret` | 유출 시 사업 치명적 영향, 최소 인원만 접근 | 핵심 알고리즘, 고객 개인정보 원본, 보안 키 |
+| **대외비** | `Classification:Confidential` | 특정 부서/프로젝트만 접근 | LLM 프롬프트 로그, 아키텍처 설계서, API 키 설정 |
+| **사내한정** | `Classification:Internal` | 전 임직원 접근 가능, 외부 유출 금지 | 운영 매뉴얼, 일반 빌드 아티팩트 |
+| **공개** | `Classification:Public` | 외부 공개 가능 | 오픈소스, 마케팅 자료 |
 
 ---
 
-## 2. Git 기반 코드 자산 등급 관리
+## 1. S3 — 문서/데이터 자산 등급 관리
 
-### 2-1. AWS CodeCommit — 리포지토리/브랜치 레벨 접근 제어
+### 1-1. 태그 기반 접근 제어 (ABAC)
 
-> ⚠️ CodeCommit은 2024년 7월부터 신규 고객 가입이 중단되었습니다. 기존 사용 중인 고객은 계속 사용 가능하며, 신규 구축 시에는 2-2의 CodeConnections + 외부 Git 방식을 권장합니다.
+S3 객체에 `Classification` 태그를 부착하고, 사용자 IAM Role에 `ClearanceLevel` 태그를 부여하여 매칭:
 
-**리포지토리 레벨 분리**:
-```
-repo-public        → Level 1 (공개)
-repo-internal      → Level 2 (사내 한정)
-repo-confidential  → Level 3 (대외비) — AI 모델 코드, LLM Gateway 코드
-repo-topsecret     → Level 4 (극비) — 보안 키 관리, 핵심 알고리즘
-```
-
-**IAM Policy — 리포지토리 ARN 단위 접근 제어**:
-```json
-{
-  "Effect": "Allow",
-  "Action": ["codecommit:GitPull", "codecommit:GitPush"],
-  "Resource": "arn:aws:codecommit:us-east-1:123456789012:repo-confidential",
-  "Condition": {
-    "StringEquals": {
-      "aws:PrincipalTag/ClearanceLevel": "Confidential"
-    }
-  }
-}
-```
-
-**브랜치 레벨 보호 — 극비 브랜치 Push/Merge 제한**:
 ```json
 {
   "Effect": "Deny",
-  "Action": [
-    "codecommit:GitPush",
-    "codecommit:MergeBranchesByFastForward",
-    "codecommit:MergeBranchesBySquash",
-    "codecommit:MergeBranchesByThreeWay",
-    "codecommit:MergePullRequestByFastForward",
-    "codecommit:MergePullRequestBySquash",
-    "codecommit:MergePullRequestByThreeWay"
-  ],
-  "Resource": "arn:aws:codecommit:us-east-1:123456789012:repo-topsecret",
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::assets-topsecret/*",
   "Condition": {
-    "StringEqualsIfExists": {
-      "codecommit:References": ["refs/heads/main", "refs/heads/release/*"]
-    },
-    "Null": {
-      "codecommit:References": "false"
+    "StringNotEquals": {
+      "aws:PrincipalTag/ClearanceLevel": "TopSecret"
     }
   }
 }
 ```
-→ `main` 및 `release/*` 브랜치에 대한 직접 Push/Merge 차단 (PR 리뷰 강제)
 
-### 2-2. CodeConnections + 외부 Git (GitHub/GitLab) — 연동 기반 등급 관리
+### 1-2. S3 Access Points — 등급별 접근 경로 분리
 
-**구현 방식**: AWS CodeConnections(구 CodeStar Connections)를 통해 GitHub/GitLab과 연동하고, 양쪽의 접근 제어를 조합
+```
+assets-bucket
+  ├── ap-public       → prefix: public/     (인터넷 허용)
+  ├── ap-internal     → prefix: internal/   (VPC 전용)
+  ├── ap-confidential → prefix: confidential/ (VPC 전용 + 팀 제한)
+  └── ap-topsecret    → prefix: topsecret/  (VPC 전용 + CISO Role만)
+```
 
-**등급별 구성 전략**:
+### 1-3. S3 Access Grants — AD 그룹 직접 매핑
 
-| 등급 | Git 호스팅 | 접근 제어 |
-|------|-----------|----------|
-| Level 1-2 | GitHub/GitLab (SaaS) | GitHub/GitLab 자체 팀/역할 권한 |
-| Level 3 | GitHub Enterprise / GitLab Self-Managed (VPC 내) | GitHub/GitLab 권한 + AWS VPC 네트워크 격리 |
-| Level 4 | CodeCommit 또는 GitLab Self-Managed (Private Subnet) | IAM 기반 접근 제어 + VPC Endpoint + KMS 암호화 |
+IAM Identity Center 연동으로 AD 그룹 → S3 경로 직접 매핑 (IAM Policy 작성 불필요):
+```
+Grant: AD Group "CISO-Office"      → s3://assets/topsecret/    READ
+Grant: AD Group "AI-Security-Team" → s3://assets/confidential/ READ
+Grant: AD Group "All-Employees"    → s3://assets/internal/     READ
+```
 
-**CodeConnections IAM 제어**:
+### 1-4. 등급별 KMS 키 분리
+
+| 등급 | 암호화 | KMS 키 |
+|------|--------|--------|
+| 극비 | SSE-KMS | CISO 전용 CMK (MFA 필수 복호화) |
+| 대외비 | SSE-KMS | 부서별 CMK |
+| 사내한정 | SSE-S3 또는 SSE-KMS (AWS 관리 키) | — |
+| 공개 | SSE-S3 (선택) | — |
+
+### 1-5. S3 Object Lock — 극비 자산 변조 방지
+
+- **Governance Mode**: 특정 IAM 권한 보유자만 삭제/수정 가능
+- **Compliance Mode**: 보존 기간 내 누구도 삭제 불가 (규제 대응)
+
+### 1-6. Amazon Macie — 자동 민감 데이터 탐지 및 등급 검증
+
+**Macie의 동작 방식**:
+- Macie는 S3 버킷 내 객체를 **샘플링 기반**으로 스캔합니다
+- 자동 민감 데이터 검색(Automated Sensitive Data Discovery)은 매일 버킷당 **객체 샘플을 선택**하여 분석
+- 샘플링 깊이(Sampling Depth)를 조정하여 스캔 범위를 제어할 수 있습니다 (기본 1%)
+- 전수 조사가 필요한 경우 **민감 데이터 검색 작업(Discovery Job)**을 별도로 생성하여 특정 버킷/접두사의 전체 객체를 스캔
+
+**활용 시나리오**:
+
+| 시나리오 | Macie 기능 | 설명 |
+|----------|-----------|------|
+| 미분류 자산 탐지 | 자동 검색 (샘플링) | `Classification` 태그 없는 객체 중 민감 데이터 포함 여부 일일 샘플 스캔 |
+| 등급 불일치 탐지 | 자동 검색 + 커스텀 식별자 | 태그가 `Public`인데 PII 포함 → 등급 불일치 알림 |
+| 극비 버킷 전수 조사 | Discovery Job (전체 스캔) | 극비/대외비 버킷은 정기적으로 전체 객체 스캔 Job 실행 |
+| 신규 업로드 검증 | EventBridge + Lambda | S3 PutObject 이벤트 → Lambda에서 Macie Job 트리거 → 등급 자동 제안 |
+
+**커스텀 데이터 식별자 예시**:
+```
+이름: KoreanClassificationKeyword
+정규식: (극비|대외비|기밀|Confidential|Top\s?Secret|RESTRICTED)
+```
+
+**Macie 결과 활용 파이프라인**:
+```
+Macie Finding → EventBridge → Lambda
+  ├── 민감 데이터 발견 + 태그 미부여 → 자동 태그 부착 (Classification:Confidential)
+  ├── 등급 불일치 (Public 태그 + PII 발견) → SNS 알림 → 정책 담당자 검토
+  └── 극비 수준 데이터 발견 → SNS 긴급 알림 + S3 객체 접근 임시 차단
+```
+
+**비용 고려사항**:
+- 자동 검색(샘플링): 버킷당 월 고정 비용 (스캔 대상 버킷 수 기준)
+- Discovery Job(전수 스캔): 스캔한 데이터 GB당 과금
+- 극비/대외비 버킷만 전수 스캔, 나머지는 샘플링으로 비용 최적화 권장
+
+### 1-7. SCP — 태그 미부여 업로드 차단
+
 ```json
 {
-  "Effect": "Allow",
-  "Action": "codeconnections:UseConnection",
-  "Resource": "arn:aws:codeconnections:us-east-1:123456789012:connection/{connection-id}",
+  "Effect": "Deny",
+  "Action": "s3:PutObject",
+  "Resource": "*",
   "Condition": {
-    "StringEquals": {
-      "codeconnections:FullRepositoryId": "org/repo-confidential"
-    }
+    "Null": { "s3:RequestObjectTag/Classification": "true" }
   }
 }
 ```
-→ 특정 리포지토리에 대한 Connection 사용만 허용
-
-### 2-3. CodeCommit + CloudTrail — 코드 접근 감사 추적
-
-**CloudTrail 데이터 이벤트로 Git 작업 추적**:
-- `GitPull` — 누가 언제 어떤 리포지토리의 코드를 가져갔는지
-- `GitPush` — 누가 언제 어떤 리포지토리에 코드를 올렸는지
-- `MergePullRequestBy*` — PR 머지 이력
-
-**기록되는 정보**:
-- `userIdentity` — Git 작업 수행자 (IAM User/Role)
-- `sourceIPAddress` — 작업 소스 IP
-- `requestParameters.repositoryName` — 대상 리포지토리
-- `requestParameters.branchName` — 대상 브랜치
-
-**극비 리포지토리 감사 정책**:
-- CloudTrail 데이터 이벤트에서 `repo-topsecret` 리포지토리 대상 모든 Git 작업 로깅
-- 비인가 접근 시도(AccessDenied) 실시간 알림
+→ `Classification` 태그 없이 S3 업로드 원천 차단
 
 ---
 
-## 3. 등급별 통합 보안 아키텍처 제안
+## 2. On-Prem Git 코드 자산 — AWS 연계 등급 관리
 
-### Level 1-2 (공개/사내 한정)
+> 코드 자산의 접근 제어는 On-Prem Git 자체 기능(그룹/프로젝트 권한, Protected Branch 등)으로 수행합니다.
+> AWS 측에서는 **코드가 AWS로 유입되는 경로**(빌드 아티팩트, 컨테이너 이미지, 배포 설정)에 대한 등급 관리를 담당합니다.
 
+### 2-1. 빌드 아티팩트 등급 관리
+
+On-Prem Git → 빌드 → AWS 저장 시 등급 태그 부여:
+
+| 아티팩트 유형 | AWS 저장소 | 등급 적용 |
+|--------------|-----------|----------|
+| 컨테이너 이미지 (LLM Gateway) | ECR | ECR Repository Policy + 이미지 태그 |
+| IaC 템플릿 | S3 | 객체 태그 `Classification` + KMS |
+| 빌드 로그 | S3 / CloudWatch Logs | 등급별 S3 버킷 분리 |
+| 배포 설정 (API Key 등) | Secrets Manager | 시크릿별 KMS 키 + IAM 접근 제어 |
+
+### 2-2. ECR — 컨테이너 이미지 등급 관리
+
+**ECR Repository Policy — 등급별 이미지 Pull 제한**:
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {"AWS": "arn:aws:iam::123456789012:role/ECS-LLM-Gateway-Role"},
+    "Action": ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"],
+    "Condition": {
+      "StringEquals": { "aws:PrincipalTag/ClearanceLevel": "Confidential" }
+    }
+  }]
+}
 ```
-사용자 → SSO 인증 → GitHub/GitLab (SaaS) → 코드
-사용자 → SSO 인증 → S3 (SSE-S3 암호화) → 문서
+
+**ECR 이미지 스캔**:
+- Push 시 자동 취약점 스캔 (CVE 기반)
+- 극비/대외비 이미지: Critical/High 취약점 발견 시 배포 차단 정책
+- EventBridge → SNS 알림
+
+### 2-3. Secrets Manager — On-Prem Git 자격 증명 관리
+
+- Git 접근 토큰/SSH 키를 Secrets Manager에 저장
+- 등급별 별도 시크릿 + KMS 키로 암호화
+- CodeBuild 등 AWS 빌드 서비스에서 On-Prem Git 접근 시 Secrets Manager에서 자격 증명 조회
+- 자동 교체(Rotation) 설정 가능
+
+---
+
+## 3. 등급별 통합 아키텍처
+
+### Level 1-2 (공개/사내한정)
+```
+사용자 → SSO → S3 (SSE-S3) → 문서
+On-Prem Git → 빌드 → S3/ECR (기본 암호화) → 아티팩트
 ```
 - 기본 IAM 역할 기반 접근 제어
-- S3 태그: `SecurityClassification: Internal`
-- 로깅: CloudTrail 관리 이벤트 (기본)
+- Macie 샘플링 스캔 (자동 검색)
 
 ### Level 3 (대외비)
-
 ```
-사용자 → SSO + MFA → VPN → VPC 내 Git (Self-Managed) → 코드
-사용자 → SSO + MFA → S3 Access Point (VPC 전용) → 문서
+사용자 → SSO + MFA → VPN → S3 Access Point (VPC 전용) → 문서
+On-Prem Git → 빌드 → ECR (Repository Policy) + S3 (SSE-KMS) → 아티팩트
 ```
-- ABAC 태그 기반 접근 제어
-- S3 태그: `SecurityClassification: Confidential`
-- SSE-KMS (팀 전용 CMK)
-- Macie 자동 스캔 활성화
-- 로깅: CloudTrail 관리 + 데이터 이벤트
+- ABAC 태그 기반 접근 제어 + 팀 전용 KMS CMK
+- Macie 정기 Discovery Job (전수 스캔)
+- CloudTrail 데이터 이벤트 활성화
 
 ### Level 4 (극비)
-
 ```
-사용자 → SSO + MFA → VPN → Private Subnet 내 Git → 코드
-사용자 → SSO + MFA → VPN → S3 VPC Endpoint → S3 Access Point (극비) → 문서
+사용자 → SSO + MFA → VPN → S3 VPC Endpoint → Access Point (극비) → 문서
+On-Prem Git → 빌드 → ECR (극비 리포지토리) + S3 (CISO CMK + Object Lock) → 아티팩트
 ```
-- IAM + ABAC + VPC Endpoint + KMS 키 정책 다중 제어
-- S3 태그: `SecurityClassification: TopSecret`
-- SSE-KMS (CISO 전용 CMK, MFA 필수 복호화)
+- IAM + ABAC + VPC Endpoint + KMS(MFA 필수) 다중 제어
 - S3 Object Lock (변조 방지)
-- Macie 자동 스캔 + 커스텀 식별자
-- 로깅: CloudTrail 전체 + S3 데이터 이벤트 + VPC Flow Logs
+- Macie 전수 스캔 + 커스텀 식별자
+- CloudTrail 전체 + S3 데이터 이벤트 + VPC Flow Logs
 - 모든 접근 실시간 알림 (EventBridge → SNS)
 
 ---
 
-## 4. 정책 담당자 결정사항 체크리스트
+## 4. 역할별 Task 요약
 
-| # | 결정사항 | 비고 |
-|---|---------|------|
-| 1 | 보안 등급 체계 정의 (몇 단계, 각 등급 명칭) | 예: 4단계 (공개/사내한정/대외비/극비) |
-| 2 | 등급별 접근 가능 역할/팀 매핑 | AD 그룹 또는 IAM Role 기준 |
-| 3 | 등급별 인증 강도 (MFA 필수 여부) | Level 3 이상 MFA 필수 권장 |
-| 4 | 등급별 네트워크 접근 경로 (인터넷/VPN/VPC 전용) | Level 4는 VPC 전용 필수 |
-| 5 | 등급별 암호화 수준 (SSE-S3 / SSE-KMS / KMS+MFA) | Level 4는 전용 CMK + MFA |
-| 6 | 등급 변경 승인 프로세스 | 누가 승인하는지, 이력 관리 방법 |
-| 7 | 미분류 자산 기본 등급 정책 | 태그 미부착 시 기본 Level 2 등 |
-| 8 | Macie 스캔 범위 및 커스텀 키워드 | 등급 불일치 탐지용 |
-| 9 | 극비 자산 접근 로그 보존 기간 | 감사 요구사항에 따라 결정 |
-| 10 | 코드 리포지토리 등급 분류 기준 | 리포지토리 단위 vs 브랜치 단위 |
+### 정책 담당자
+- 보안 등급 체계 수립 (등급 정의, 태그 값 표준화)
+- 등급별 접근 가능 인원/역할/AD 그룹 매핑
+- 등급별 암호화 수준 결정 (KMS 키 분리 정책)
+- 등급별 로그 보존 기간 결정
+- Macie 스캔 방식 결정 (샘플링 vs 전수 스캔, 대상 버킷)
+- 등급 미부여 자산 대응 정책 (업로드 차단 vs 기본 등급 자동 부여)
 
----
+### 구축·운영 담당자
+- S3 객체/버킷에 `Classification` 태그 체계 적용
+- IAM ABAC Policy 설계 (ClearanceLevel ↔ Classification 매칭)
+- S3 Access Point / Access Grants 설정
+- KMS 키 등급별 생성 및 키 정책 설정
+- Macie 활성화 + 커스텀 데이터 식별자 + Discovery Job 스케줄
+- ECR Repository Policy 및 이미지 스캔 설정
+- Secrets Manager에 Git 자격 증명 저장
+- SCP로 태그 미부여 업로드 차단
+- Config Rule (`required-tags`) 설정
+- EventBridge 알림 파이프라인 구성
 
-## 5. 구축·운영 담당자 구현 Task 요약
-
-| # | Task | AWS 서비스 | 등급 |
-|---|------|-----------|------|
-| 1 | S3 객체 태그 표준 적용 (`SecurityClassification`) | S3, IAM | 전체 |
-| 2 | IAM ABAC Policy 설계 (태그 기반 접근 제어) | IAM | 전체 |
-| 3 | S3 Access Point 등급별 생성 | S3 | Level 3-4 |
-| 4 | S3 Access Grants + Identity Center 연동 | S3, IAM Identity Center | Level 2-4 |
-| 5 | KMS 키 등급별 생성 및 키 정책 설정 | KMS | Level 3-4 |
-| 6 | Macie 활성화 및 커스텀 데이터 식별자 설정 | Macie | Level 3-4 |
-| 7 | Git 리포지토리 등급별 분리 및 IAM 정책 적용 | CodeCommit / CodeConnections | 전체 |
-| 8 | 브랜치 보호 정책 (Push/Merge 제한) | CodeCommit IAM Condition | Level 3-4 |
-| 9 | CloudTrail 데이터 이벤트 활성화 (S3 + Git) | CloudTrail | Level 3-4 |
-| 10 | S3 Object Lock 설정 (변조 방지) | S3 | Level 4 |
-| 11 | EventBridge 알림 파이프라인 구성 | EventBridge, SNS, Lambda | Level 4 |
-| 12 | VPC Endpoint 전용 접근 경로 구성 | VPC, S3 | Level 4 |
+### 관제 담당자
+- 극비/대외비 자산 접근 이력 모니터링 (Splunk)
+- Macie 탐지 결과 모니터링 (등급 불일치, 미분류 민감 데이터)
+- ECR 이미지 스캔 취약점 알림 모니터링
+- Config Rule Non-compliant (태그 미부여) 알림 모니터링
 
 ---
 
-> **참고**: 이 문서는 [ai-security-architecture-tasks.md](./ai-security-architecture-tasks.md)의 IAM 섹션(6-2. 권한관리)과 연계됩니다.
-> 등급별 IAM 정책 세분화 수준은 [ai-security-granularity.md](./ai-security-granularity.md)의 B-1. IAM × Bedrock Deep Dive를 참조하세요.
+> **참고**: IAM ABAC 및 Bedrock 권한 세분화는 [ai-security-granularity.md](./ai-security-granularity.md)를 참조하세요.
