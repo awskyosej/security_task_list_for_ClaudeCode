@@ -380,11 +380,20 @@ Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 
 - 프롬프트/응답 전문 로깅 여부는 정책 담당자 결정에 따라 ON/OFF
 - PII 마스킹 처리 후 로깅 (애플리케이션 레벨에서 구현)
 
+**MCP(Model Context Protocol) 도구 사용 제어**:
+- Bedrock API에는 MCP 사용 여부를 구분하는 Condition Key가 없음 → IAM/Endpoint Policy로 직접 제어 불가
+- **LLM Gateway가 유일한 MCP 제어 지점**: 요청 페이로드 내 `tool_use` / `tool_result` 블록을 파싱하여 필터링
+- 도구명 화이트리스트/블랙리스트 (예: `read_file` 허용, `execute_command` 차단)
+- 사용자/팀별 허용 도구 범위 차등 적용
+- 도구 파라미터 검증 (파일 경로 범위, DB 쿼리 유형, 외부 URL 화이트리스트)
+- 도구 호출 이력 로깅 (도구명, 파라미터, 결과, 호출자)
+
 **비용 추적 세분화**:
 - 사용자/팀/프로젝트별 토큰 사용량 집계
 - Bedrock IAM Principal Attribution과 연계하여 CUR(Cost and Usage Report)에서 사용자별 비용 추적 가능
 
 **세분화 수준 요약**:
+- ✅ **MCP 도구 사용 제어** — LLM Gateway에서 tool_use 페이로드 파싱으로 도구별 화이트리스트/블랙리스트 적용 (Bedrock API에는 MCP Condition Key 없음)
 - ✅ 사용자/팀/프로젝트 단위 호출 제어 및 추적
 - ✅ 요청별 모델·Guardrail 동적 매핑
 - ✅ 토큰 단위 사용량 추적 및 Quota 적용
