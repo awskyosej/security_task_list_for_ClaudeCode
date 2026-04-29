@@ -242,6 +242,39 @@
 - 애플리케이션 에러 로그 알림 설정
 - 비정상 LLM 호출 패턴 탐지 (대량 호출, 비정상 프롬프트 등)
 
+### 4-4. MCP(Model Context Protocol) 도구 사용 제어
+
+> Claude Code는 MCP를 통해 외부 도구(파일 시스템, DB, API 등)를 호출할 수 있습니다.
+> Bedrock API에는 MCP 사용 여부를 구분하는 Condition Key가 없으므로, IAM이나 VPC Endpoint Policy로는 MCP를 직접 제어할 수 없습니다.
+> **LLM Gateway가 유일하게 MCP tool_use 요청을 파싱하고 필터링할 수 있는 제어 지점**입니다.
+
+**정책 담당자**
+- 허용 MCP 도구 화이트리스트 정책 수립 (예: 파일 읽기만 허용, DB 쓰기 차단)
+- 사용자/팀/프로젝트별 허용 MCP 도구 범위 정의
+- MCP 도구 호출 로깅 레벨 결정 (도구명만 vs 입출력 파라미터 포함)
+
+**구축·운영 담당자**
+- LLM Gateway에서 Bedrock API 요청 페이로드 내 `tool_use` / `tool_result` 블록 파싱 로직 구현
+- MCP 도구 화이트리스트/블랙리스트 필터링:
+  - 허용된 도구명 목록 관리 (예: `read_file` 허용, `execute_command` 차단)
+  - 사용자/팀별 허용 도구 매핑 (JWT 클레임 또는 API Key 기반)
+- MCP 도구 호출 시 파라미터 검증:
+  - 파일 경로 접근 범위 제한 (허용 디렉토리 화이트리스트)
+  - DB 쿼리 유형 제한 (SELECT만 허용, DROP/DELETE 차단)
+  - 외부 API 호출 대상 URL 화이트리스트
+- MCP 도구 호출 로깅 (도구명, 파라미터, 결과, 호출자, 타임스탬프)
+
+**MCP 제어 기능을 제공하는 솔루션 예시**:
+- **Amazon Bedrock AgentCore Gateway** — AWS 네이티브. Claude Code에서 `mcp-proxy-for-aws`를 통해 Gateway를 MCP 서버로 연결하고, Gateway Interceptor로 사용자 IAM Role별 MCP 도구 접근을 동적 필터링. IAM SigV4 인증으로 Cognito 없이 전체 체인 인증 가능. 스키마 관리, PII 필터링, 멀티테넌트 지원. ([AWS Blog 참고](https://aws.amazon.com/blogs/machine-learning/apply-fine-grained-access-control-with-bedrock-agentcore-gateway-interceptors/))
+- **Kong AI Gateway** (v3.13+) — MCP Tool ACLs 기능으로 도구별 세분화된 인가 정책 적용. 역할 기반 접근 제어, Default Deny 정책 지원. ([Kong Blog 참고](https://konghq.com/blog/product-releases/mcp-tool-acls-ai-gateway))
+- **Traefik Hub MCP Gateway** — MCP 서버 프록시로 인증, 도구 필터링 정책, 감사 로깅 제공. ([Traefik Docs 참고](https://doc.traefik.io/traefik-hub/mcp-gateway/guides/getting-started))
+- **자체 구축** — ECS 위 LLM Gateway 애플리케이션에서 직접 tool_use 페이로드 파싱 및 필터링 로직 구현
+
+**관제 담당자**
+- MCP 도구 호출 이력 모니터링 (SIEM 대시보드)
+- 비허용 도구 호출 시도 알림
+- 비정상 패턴 탐지 (특정 사용자의 과도한 도구 호출, 차단된 도구 반복 시도 등)
+
 ---
 
 ## 5. Amazon Bedrock (Claude Inference)
