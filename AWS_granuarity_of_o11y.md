@@ -1,12 +1,10 @@
----
-
-## 부록: AWS 서비스별 보안 기능 세분화(Granularity) 수준
+# AWS 서비스별 보안 기능 세분화(Granularity) 수준
 
 각 AWS 서비스가 **얼마나 세밀한 수준까지** 권한 제어, 로깅, 관제가 가능한지를 정리합니다.
 
 ---
 
-### A. VPC Flow Logs — 네트워크 트래픽 로깅 세분화
+## A. VPC Flow Logs — 네트워크 트래픽 로깅 세분화
 
 **로깅 단위**: 플로우(Flow) 단위 (5-tuple: 소스IP, 목적지IP, 소스포트, 목적지포트, 프로토콜)
 
@@ -43,7 +41,7 @@
 
 ---
 
-### B. AWS IAM — 권한 관리 세분화
+## B. AWS IAM — 권한 관리 세분화
 
 **권한 제어 모델**:
 
@@ -84,9 +82,193 @@
 - ✅ 조직 수준 가드레일 (SCP)
 - ❌ 일부 서비스/액션은 리소스 레벨 권한 미지원 (`*`만 가능)
 
+### B-1. IAM × Bedrock Deep Dive — Bedrock 서비스에 대한 IAM 권한 세분화
+
+Amazon Bedrock은 IAM 권한 제어가 매우 세분화되어 있어, 모델 단위, 리소스 유형 단위, 조건 기반으로 정밀한 접근 제어가 가능합니다.
+
+#### 리소스 레벨 권한 지원 현황
+
+Bedrock은 대부분의 주요 액션에서 **리소스 레벨 권한을 지원**합니다:
+
+| IAM Action | 리소스 레벨 권한 | Resource ARN 형식 | 설명 |
+|---|---|---|---|
+| `bedrock:InvokeModel` | ✅ 지원 | `arn:aws:bedrock:{region}::foundation-model/{model-id}` | 특정 모델만 호출 허용 |
+| `bedrock:InvokeModelWithResponseStream` | ✅ 지원 | `arn:aws:bedrock:{region}::foundation-model/{model-id}` | 스트리밍 호출 제한 |
+| `bedrock:Converse` | ✅ 지원 | `arn:aws:bedrock:{region}::foundation-model/{model-id}` | Converse API 제한 |
+| `bedrock:ApplyGuardrail` | ✅ 지원 | `arn:aws:bedrock:{region}:{account}:guardrail/{id}` | 특정 Guardrail만 적용 |
+| `bedrock:InvokeAgent` | ✅ 지원 | `arn:aws:bedrock:{region}:{account}:agent-alias/{agent-id}/{alias-id}` | 특정 Agent만 호출 |
+| `bedrock:Retrieve` (KB) | ✅ 지원 | `arn:aws:bedrock:{region}:{account}:knowledge-base/{kb-id}` | 특정 KB만 쿼리 |
+| `bedrock:CreateAgent` | ❌ `*` 만 | — | 생성 시점에는 ARN 미존재 |
+| `bedrock:ListFoundationModels` | ❌ `*` 만 | — | 목록 조회는 리소스 특정 불가 |
+
+**핵심 포인트**: `InvokeModel`은 Foundation Model ARN 단위로 제한 가능하므로, "Claude 3.5 Sonnet만 호출 가능" 같은 정책을 IAM으로 직접 구현할 수 있습니다.
+
+#### Bedrock 전용 Condition Key
+
+Bedrock은 AWS 글로벌 Condition Key 외에 **서비스 전용 Condition Key**를 제공합니다:
+
+| Condition Key | 설명 | 사용 예시 |
+|---|---|---|
+| `bedrock:ThirdPartyKnowledgeBaseCredentialsSecretArn` | 3rd party KB 연동 시 Secret ARN 제한 | 특정 Secrets Manager 시크릿만 허용 |
+| `bedrock:BearerTokenType` | Bearer Token 유형 제한 | 특정 토큰 유형만 허용 |
+| `bedrock:ServiceTier` | Agent 서비스 티어 제한 | 특정 서비스 티어만 허용/거부 |
+| `aws:RequestTag/${TagKey}` | 리소스 생성 시 태그 강제 | Agent/KB 생성 시 필수 태그 요구 |
+| `aws:ResourceTag/${TagKey}` | 기존 리소스 태그 기반 접근 제어 | 특정 팀 태그가 붙은 Agent만 접근 |
+
+#### ABAC (태그 기반 접근 제어) 지원
+
+Bedrock은 **ABAC를 지원**합니다. 태그를 부착할 수 있는 Bedrock 리소스:
+- Agent, Agent Alias, Agent Action Group
+- Knowledge Base
+- Guardrail
+- Custom Model, Model Copy Job
+- Evaluation Job
+- Provisioned Model Throughput
+- Flow, Flow Alias, Prompt
+
+**ABAC 활용 예시**: 팀별로 Agent를 분리 관리
+```json
+{
+  "Effect": "Allow",
+  "Action": ["bedrock:InvokeAgent"],
+  "Resource": "arn:aws:bedrock:*:*:agent-alias/*",
+  "Condition": {
+    "StringEquals": {
+      "aws:ResourceTag/Team": "${aws:PrincipalTag/Team}"
+    }
+  }
+}
+```
+→ 호출자의 `Team` 태그와 Agent의 `Team` 태그가 일치할 때만 호출 허용
+
+#### 실전 IAM Policy 예시
+
+**예시 1: 특정 모델만 호출 허용 (Claude 3.5 Sonnet)**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": [
+      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+    ]
+  }]
+}
+```
+
+**예시 2: SCP로 조직 전체에서 특정 모델 차단**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "DenyNonApprovedModels",
+    "Effect": "Deny",
+    "Action": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": "arn:aws:bedrock:*::foundation-model/*",
+    "Condition": {
+      "StringNotLike": {
+        "bedrock:FoundationModel": "anthropic.claude-*"
+      }
+    }
+  }]
+}
+```
+→ Anthropic Claude 계열 외 모든 모델 호출 차단
+
+**예시 3: VPC Endpoint 경유 + MFA 필수 조건**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "bedrock:InvokeModel",
+    "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+    "Condition": {
+      "StringEquals": {
+        "aws:SourceVpce": "vpce-0123456789abcdef0"
+      },
+      "Bool": {
+        "aws:MultiFactorAuthPresent": "true"
+      }
+    }
+  }]
+}
+```
+
+**예시 4: Guardrail 적용 강제 (Guardrail 없이 모델 직접 호출 차단)**
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowOnlyWithGuardrail",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": "arn:aws:bedrock:*::foundation-model/*",
+      "Condition": {
+        "StringLike": {
+          "bedrock:GuardrailIdentifier": "arn:aws:bedrock:*:*:guardrail/*"
+        }
+      }
+    },
+    {
+      "Sid": "DenyWithoutGuardrail",
+      "Effect": "Deny",
+      "Action": "bedrock:InvokeModel",
+      "Resource": "arn:aws:bedrock:*::foundation-model/*",
+      "Condition": {
+        "Null": {
+          "bedrock:GuardrailIdentifier": "true"
+        }
+      }
+    }
+  ]
+}
+```
+
+#### VPC Endpoint Policy를 통한 네트워크 수준 제어
+
+Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 제어 가능:
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "AWS": "arn:aws:iam::123456789012:role/ECS-LLM-Gateway-Role"
+    },
+    "Action": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-*"
+  }]
+}
+```
+→ 특정 IAM Role만, 특정 모델만, VPC Endpoint를 통해서만 호출 가능
+
+#### Bedrock IAM 세분화 수준 요약
+
+- ✅ **모델 ARN 단위** 호출 제한 (Foundation Model, Provisioned Throughput, Custom Model 각각)
+- ✅ **ABAC 지원** — Agent, KB, Guardrail 등에 태그 기반 동적 접근 제어
+- ✅ **Bedrock 전용 Condition Key** — ServiceTier, ThirdPartyKB 등 서비스 특화 조건
+- ✅ **AWS 글로벌 Condition Key** — SourceVpc, SourceIp, MFA, PrincipalOrgID 등 모두 사용 가능
+- ✅ **SCP로 조직 수준 모델 차단** — 승인된 모델만 사용하도록 가드레일 설정
+- ✅ **VPC Endpoint Policy** — 네트워크 레벨에서 Principal + Action + Resource 3중 제어
+- ✅ **Guardrail 적용 강제** — IAM Condition으로 Guardrail 없는 직접 호출 차단 가능
+- ⚠️ 일부 관리 API (`CreateAgent`, `ListFoundationModels` 등)는 리소스 레벨 권한 미지원 (`*`만 가능)
+- ⚠️ Foundation Model은 AWS 소유 리소스이므로 `aws:ResourceTag` 사용 불가 (Custom Model, Agent 등 고객 소유 리소스에만 태그 가능)
+
 ---
 
-### C. AWS CloudTrail — API 호출 로깅 세분화
+## C. AWS CloudTrail — API 호출 로깅 세분화
 
 **로깅 유형**:
 
@@ -131,7 +313,7 @@
 
 ---
 
-### D. Amazon Bedrock — AI 모델 호출 로깅 및 제어 세분화
+## D. Amazon Bedrock — AI 모델 호출 로깅 및 제어 세분화
 
 **모델 호출 로깅 (Invocation Logging)**:
 - 대상 API: `InvokeModel`, `InvokeModelWithResponseStream`, `Converse`, `ConverseStream`
@@ -170,7 +352,7 @@
 
 ---
 
-### E. AWS API Gateway — API 호출 로깅 세분화
+## E. AWS API Gateway — API 호출 로깅 세분화
 
 **액세스 로그 (Access Logs)** — 커스텀 포맷 지원:
 - `$context.identity.sourceIp` — 호출자 소스 IP
@@ -203,7 +385,7 @@
 
 ---
 
-### F. AWS ECS — 컨테이너 워크로드 로깅 세분화
+## F. AWS ECS — 컨테이너 워크로드 로깅 세분화
 
 **컨테이너 로그**:
 - `awslogs` 드라이버를 통해 stdout/stderr → CloudWatch Logs 전송
@@ -229,7 +411,7 @@
 
 ---
 
-### G. AWS Config — 리소스 구성 변경 추적 세분화
+## G. AWS Config — 리소스 구성 변경 추적 세분화
 
 **기록 단위**: Configuration Item (CI) — 리소스의 전체 구성 스냅샷
 
