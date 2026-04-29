@@ -257,14 +257,15 @@ Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 
 #### Bedrock IAM 세분화 수준 요약
 
 - ✅ **모델 ARN 단위** 호출 제한 (Foundation Model, Provisioned Throughput, Custom Model 각각)
-- ✅ **ABAC 지원** — Agent, KB, Guardrail 등에 태그 기반 동적 접근 제어
+- ✅ **ABAC 지원** — Agent, KB, Guardrail, Custom Model, Provisioned Model, Application Inference Profile 등 **고객 소유 리소스**에 태그 기반 동적 접근 제어
+- ✅ **Application Inference Profile 활용** — Foundation Model(AWS 소유)을 감싸는 고객 소유 리소스를 생성하면, Foundation Model에도 간접적으로 `aws:ResourceTag` 기반 ABAC 적용 가능
 - ✅ **Bedrock 전용 Condition Key** — ServiceTier, ThirdPartyKB 등 서비스 특화 조건
 - ✅ **AWS 글로벌 Condition Key** — SourceVpc, SourceIp, MFA, PrincipalOrgID 등 모두 사용 가능
 - ✅ **SCP로 조직 수준 모델 차단** — 승인된 모델만 사용하도록 가드레일 설정
-- ✅ **VPC Endpoint Policy** — 네트워크 레벨에서 Principal + Action + Resource 3중 제어
+- ✅ **VPC Endpoint Policy** — 네트워크 레벨에서 Principal + Action + Resource 3중 제어. VPC Endpoint 자체는 EC2/VPC 서비스 리소스이므로 EC2 태그 기반 관리도 가능
 - ✅ **Guardrail 적용 강제** — IAM Condition으로 Guardrail 없는 직접 호출 차단 가능
 - ⚠️ 일부 관리 API (`CreateAgent`, `ListFoundationModels` 등)는 리소스 레벨 권한 미지원 (`*`만 가능)
-- ⚠️ Foundation Model은 AWS 소유 리소스이므로 `aws:ResourceTag` 사용 불가 (Custom Model, Agent 등 고객 소유 리소스에만 태그 가능)
+- ⚠️ **Foundation Model은 AWS 소유 리소스** — ARN에 Account ID가 없음 (`arn:aws:bedrock:{region}::foundation-model/...`). `aws:ResourceTag` 직접 사용 불가. 태그 기반 제어가 필요하면 Application Inference Profile로 감싸서 사용
 
 ---
 
@@ -352,7 +353,50 @@ Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 
 
 ---
 
-## E. AWS API Gateway — API 호출 로깅 세분화
+## E. LLM Gateway (ECS 위 애플리케이션) — 애플리케이션 레벨 보안 세분화
+
+> LLM Gateway는 AWS 관리형 서비스가 아닌 **고객이 ECS 위에 구축하는 애플리케이션**입니다.
+> 따라서 보안 세분화 수준은 애플리케이션 설계에 따라 결정되며, 아래는 구현 가능한 최대 세분화 수준입니다.
+
+**제어 대상**: API Gateway → LLM Gateway → Bedrock 사이의 요청 흐름
+
+**인증/권한 제어 세분화**:
+- 사용자별 API Key 또는 JWT 토큰 기반 호출자 식별
+- 사용자/팀/프로젝트별 허용 모델 목록 제어 (애플리케이션 로직)
+- 사용자별 토큰 사용량 한도(Quota) 적용
+- 프롬프트 내용 기반 사전 필터링 (금지 키워드, 민감 데이터 탐지)
+- 요청별 Bedrock Guardrail ID 동적 매핑 (사용자 등급에 따라 다른 Guardrail 적용)
+
+**로깅 세분화**:
+- 요청 단위 구조화 로그:
+  - `request_id` — 요청 고유 식별자 (API Gateway requestId와 연결)
+  - `user_id` / `team_id` — 호출자 식별 (JWT 클레임 또는 API Key 매핑)
+  - `model_id` — 호출 대상 Bedrock 모델
+  - `input_tokens` / `output_tokens` — 토큰 사용량
+  - `latency_ms` — 응답 지연시간
+  - `guardrail_id` — 적용된 Guardrail
+  - `guardrail_action` — Guardrail 차단/통과 결과
+  - `prompt_hash` — 프롬프트 해시 (전문 로깅 없이 동일 프롬프트 추적용)
+- 프롬프트/응답 전문 로깅 여부는 정책 담당자 결정에 따라 ON/OFF
+- PII 마스킹 처리 후 로깅 (애플리케이션 레벨에서 구현)
+
+**비용 추적 세분화**:
+- 사용자/팀/프로젝트별 토큰 사용량 집계
+- Bedrock IAM Principal Attribution과 연계하여 CUR(Cost and Usage Report)에서 사용자별 비용 추적 가능
+
+**세분화 수준 요약**:
+- ✅ 사용자/팀/프로젝트 단위 호출 제어 및 추적
+- ✅ 요청별 모델·Guardrail 동적 매핑
+- ✅ 토큰 단위 사용량 추적 및 Quota 적용
+- ✅ 프롬프트 해시 기반 추적 (전문 로깅 없이도 동일 프롬프트 식별)
+- ✅ PII 마스킹 후 로깅 (애플리케이션 레벨)
+- ✅ API Gateway requestId와 연결하여 End-to-End 요청 추적
+- ⚠️ AWS 관리형 서비스가 아니므로 세분화 수준은 애플리케이션 구현에 의존
+- ⚠️ 로깅 포맷/필드는 개발팀이 설계해야 함 (표준 제공 없음)
+
+---
+
+## F. AWS API Gateway — API 호출 로깅 세분화
 
 **액세스 로그 (Access Logs)** — 커스텀 포맷 지원:
 - `$context.identity.sourceIp` — 호출자 소스 IP
@@ -385,7 +429,7 @@ Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 
 
 ---
 
-## F. AWS ECS — 컨테이너 워크로드 로깅 세분화
+## G. AWS ECS — 컨테이너 워크로드 로깅 세분화
 
 **컨테이너 로그**:
 - `awslogs` 드라이버를 통해 stdout/stderr → CloudWatch Logs 전송
@@ -399,19 +443,21 @@ Bedrock VPC Endpoint에 Policy를 설정하여 네트워크 레벨에서 추가 
 - `ecs-container-id` / `ecs-second-container-id` — 컨테이너 레벨 식별
 - `ecs-container-instance-arn` — 컨테이너 인스턴스 식별 (EC2 launch type)
 
-**ECR 이미지 스캔**:
-- 이미지 레이어 단위 취약점 스캔 (CVE 기반)
+**Amazon Inspector (ECR Enhanced Scanning)**:
+- ECR Enhanced Scanning 활성화 시 Amazon Inspector가 스캔 엔진 담당
+- OS 패키지 CVE + 프로그래밍 언어 패키지 CVE (pip, npm, Maven 등) 탐지
 - 심각도별 분류 (Critical, High, Medium, Low, Informational)
+- ECR Basic Scanning(내장)은 OS 패키지만 탐지하므로, LLM Gateway처럼 Python/Node 의존성이 많은 컨테이너는 Inspector Enhanced Scanning 권장
 
 **세분화 수준 요약**:
 - ✅ 컨테이너 레벨 네트워크 트래픽 추적 (Flow Logs v7)
 - ✅ 태스크/서비스/클러스터 단위 식별
 - ✅ 애플리케이션 로그 구조화 가능
-- ✅ 이미지 취약점 CVE 단위 스캔
+- ✅ 이미지 취약점 CVE 단위 스캔 (Inspector Enhanced Scanning — OS + 언어 패키지)
 
 ---
 
-## G. AWS Config — 리소스 구성 변경 추적 세분화
+## H. AWS Config — 리소스 구성 변경 추적 세분화
 
 **기록 단위**: Configuration Item (CI) — 리소스의 전체 구성 스냅샷
 
